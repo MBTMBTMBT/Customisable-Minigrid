@@ -9,32 +9,13 @@ from minigrid.core.grid import Grid
 from minigrid.core.mission import MissionSpace
 from minigrid.core.world_object import *
 from minigrid.core.world_object import WorldObj
-from minigrid.manual_control import ManualControl
 from minigrid.minigrid_env import MiniGridEnv
 from gymnasium.core import ActType, ObsType
 from minigrid.core.constants import OBJECT_TO_IDX, COLOR_TO_IDX, STATE_TO_IDX, TILE_PIXELS
 from PIL import Image, ImageDraw, ImageFont
 
-
-class SimpleActions(IntEnum):
-    # Turn left, turn right, move forward
-    left = 0
-    right = 1
-    forward = 2
-    uni_toggle = 3
-
-
-def _door_toggle_any_colour(door, env, pos):
-    # If the player has the right key to open the door
-    if door.is_locked:
-        if isinstance(env.carrying, Key):
-            door.is_locked = False
-            door.is_open = True
-            return True
-        return False
-
-    door.is_open = not door.is_open
-    return True
+from minigrid.simple_actions import SimpleActions
+from simple_manual_control import SimpleManualControl
 
 
 class CustomEnv(MiniGridEnv):
@@ -46,11 +27,9 @@ class CustomEnv(MiniGridEnv):
     Later layers overwrite earlier ones. Only 'door' objects are allowed to overwrite others (e.g., walls).
 
     Attributes:
-        txt_file_path (Optional[str]): Path to the JSON layout file.
+        json_file_path (Optional[str]): Path to the JSON layout file.
         config (Optional[dict]): Parsed layout configuration dictionary.
         display_size (int): Size of the visualized grid (can be larger than the layout).
-        agent_start_pos (Optional[Tuple[int, int]]): Manually specified agent start position; overrides agent layer.
-        agent_start_dir (Optional[int]): Initial agent direction (0=right, ..., 3=up); random if not set.
         display_mode (str): "middle" or "random" placement of layout in the full grid.
         random_rotate (bool): Whether to randomly rotate the layout (0°, 90°, 180°, 270°).
         random_flip (bool): Whether to randomly flip the layout horizontally.
@@ -61,14 +40,12 @@ class CustomEnv(MiniGridEnv):
 
     def __init__(
         self,
-        txt_file_path: Optional[str] = None,
+        json_file_path: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         display_size: Optional[int] = None,
         display_mode: Optional[str] = "middle",
         random_rotate: bool = False,
         random_flip: bool = False,
-        agent_start_pos: Optional[Tuple[int, int]] = None,
-        agent_start_dir: Optional[int] = None,
         custom_mission: str = "Explore and interact with objects.",
         max_steps: int = 100000,
         render_carried_objs: bool = True,
@@ -79,24 +56,22 @@ class CustomEnv(MiniGridEnv):
         Initialize the environment from either a file or a config dictionary.
         """
         # Enforce exclusive choice: exactly one of the two must be provided
-        assert (txt_file_path is not None) ^ (config is not None), \
-            "You must provide either 'txt_file_path' or 'config', but not both."
+        assert (json_file_path is not None) ^ (config is not None), \
+            "You must provide either 'json_file_path' or 'config', but not both."
 
-        self.txt_file_path = txt_file_path
+        self.txt_file_path = json_file_path
         self.display_mode = display_mode
         self.random_rotate = random_rotate
         self.random_flip = random_flip
         self.render_carried_objs = render_carried_objs
         self.any_key_opens_the_door = any_key_opens_the_door
-        self.agent_start_pos = agent_start_pos
-        self.agent_start_dir = agent_start_dir
         self.mission = custom_mission
         self.tile_size = 32
         self.skip_reset = False
 
         # Load config from file if needed
-        if txt_file_path is not None:
-            with open(txt_file_path, 'r') as f:
+        if json_file_path is not None:
+            with open(json_file_path, 'r') as f:
                 self.config = json.load(f)
         else:
             self.config = config
@@ -113,10 +88,6 @@ class CustomEnv(MiniGridEnv):
         assert display_mode in ["middle", "random"], "Invalid display_mode"
         assert self.display_size >= layout_size, "display_size must be >= layout layout_size"
 
-        # Default agent direction
-        if self.agent_start_dir is None:
-            self.agent_start_dir = random.randint(0, 3)
-
         # Initialize parent class
         super().__init__(
             mission_space=MissionSpace(mission_func=lambda: custom_mission),
@@ -127,6 +98,8 @@ class CustomEnv(MiniGridEnv):
 
         self.actions = SimpleActions
         self.action_space = spaces.Discrete(len(self.actions))
+
+        self.step_count = 0
 
     def get_frame(
         self,
@@ -150,47 +123,37 @@ class CustomEnv(MiniGridEnv):
         """
         tile_size = self.tile_size
 
-        carrying_objects = {
-            "carrying": 1,
-            "carrying_colour": 0,
-        }
+        # Create a grey background for the carried item row
+        item_row = np.full((tile_size, tile_size, 3), fill_value=100, dtype=np.uint8)
 
         # Check if the agent is carrying an object
-        if self.carrying is not None and self.carrying != 0:
-            carrying = OBJECT_TO_IDX[self.carrying.type]
-            carrying_colour = COLOR_TO_IDX[self.carrying.color]
+        if self.carrying is not None:
+            # Create a canvas for rendering the carried object
+            # Use float32 format for proper rendering, then convert to uint8
+            canvas = np.zeros((tile_size, tile_size, 3), dtype=np.float32)
 
-            carrying_objects = {
-                "carrying": carrying,
-                "carrying_colour": carrying_colour,
-            }
+            # Render the actual object using its render method
+            self.carrying.render(canvas)
 
-        # Prepare to extract carried item and colour indices
-        object_idx = carrying_objects.get('carrying', 1)
-        colour_idx = carrying_objects.get('carrying_colour', 0)
+            # Convert from float32 [0,1] to uint8 [0,255]
+            canvas = np.clip(canvas, 0.0, 1.0)
+            item_row = (canvas * 255).astype(np.uint8)
 
-        # Map indices to actual objects and colours
-        object_name = IDX_TO_OBJECT.get(object_idx, "empty")
-        colour_name = IDX_TO_COLOR.get(colour_idx, "black")
-
-        # Create a grey background for the carried item row (matching the tile size)
-        item_row = np.full((tile_size, tile_size, 3), fill_value=100, dtype=np.uint8)  # Default to grey
-
-        if object_name != "empty":
-            # Use the actual symbol for the object rather than the first letter
-            symbol = self._get_object_symbol(object_name)
-            # Generate a tile with the symbol and colour for the object carried by the agent
-            item_row = self._draw_symbol_on_tile(item_row, symbol, colour_name)
+            # If the rendered object is all black (empty), use grey background
+            if np.all(item_row == 0):
+                item_row = np.full((tile_size, tile_size, 3), fill_value=100, dtype=np.uint8)
 
         # Extend the original image with this new row at the bottom
         full_height, full_width, _ = full_image.shape
 
-        # Ensure both the full_image and the item_row have the same width (adjust if necessary)
-        # Put the item on the right side of the row (align to the bottom-right corner)
+        # Create a full-width row with grey background
         full_image_width = full_image.shape[1]
-        item_row_full = np.full((tile_size, full_image_width, 3), fill_value=100, dtype=np.uint8)  # Grey background
-        item_row_full[:, -tile_size:, :] = item_row  # Add item to the right
+        item_row_full = np.full((tile_size, full_image_width, 3), fill_value=100, dtype=np.uint8)
 
+        # Place the item tile on the right side of the row
+        item_row_full[:, -tile_size:, :] = item_row
+
+        # Combine the original image with the new item row
         output_image = np.vstack([full_image, item_row_full])
 
         return output_image
@@ -378,13 +341,7 @@ class CustomEnv(MiniGridEnv):
                     filled.add((x, y))
 
         # Determine agent position
-        if self.agent_start_pos is not None:
-            x, y = self.agent_start_pos
-            x, y = anchor_x + x, anchor_y + y
-            x, y = rotate_coordinate(x, y, image_direction, self.display_size)
-            x, y = flip_coordinate(x, y, flip, self.display_size)
-            self.agent_pos = (x, y)
-        elif agent_positions:
+        if agent_positions:
             self.agent_pos = random.choice(agent_positions)
         else:
             raise ValueError("No available agent position")
@@ -431,6 +388,18 @@ class CustomEnv(MiniGridEnv):
         else:
             return None
 
+    def _door_toggle_any_colour(self, door,):
+        # If the player has the right key to open the door
+        if door.is_locked:
+            if isinstance(self.carrying, Key):
+                door.is_locked = False
+                door.is_open = True
+                return True
+            return False
+
+        door.is_open = not door.is_open
+        return True
+
     def reset(
             self,
             *,
@@ -445,6 +414,8 @@ class CustomEnv(MiniGridEnv):
 
         if self.render_mode == "human":
             self.render()
+
+        self.step_count = 0
 
         obs = self.gen_obs()
 
@@ -469,7 +440,7 @@ class CustomEnv(MiniGridEnv):
         return obs, {}
 
     def step(
-        self, action: ActType
+            self, action: ActType
     ) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         self.step_count += 1
 
@@ -510,46 +481,9 @@ class CustomEnv(MiniGridEnv):
             # if fwd_cell is not None and (fwd_cell.type == "wall" or fwd_cell.type == "door" and not fwd_cell.is_open):
             #     reward -= 0.05
 
-        # # Pick up an object
-        # elif action == self.actions.pickup:
-        #     if fwd_cell and fwd_cell.can_pickup():
-        #         if self.carrying is None or self.carrying == 0:
-        #             self.carrying = fwd_cell
-        #             self.carrying.cur_pos = np.array([-1, -1])
-        #             self.grid.set(fwd_pos[0], fwd_pos[1], None)
-        #             reward += 0.1
-        #             # print("Key picked up!")
-        #
-        # # Drop an object
-        # elif action == self.actions.drop:
-        #     if not fwd_cell and self.carrying:
-        #         self.grid.set(fwd_pos[0], fwd_pos[1], self.carrying)
-        #         self.carrying.cur_pos = fwd_pos
-        #         self.carrying = None
-        #         reward -= 0.1
-        #
-        # # Toggle/activate an object
-        # elif action == self.actions.toggle:
-        #     if fwd_cell:
-        #         was_open = False
-        #         if fwd_cell.type == "door" and fwd_cell.is_open:
-        #             was_open = True
-        #         if fwd_cell.type == "door" and self.any_key_opens_the_door:
-        #             _door_toggle_any_colour(fwd_cell, self, fwd_pos)
-        #         else:
-        #             fwd_cell.toggle(self, fwd_pos)
-        #         if fwd_cell.type == "door":
-        #             if fwd_cell.is_open:
-        #                 if not was_open:
-        #                     reward += 0.1
-        #                     # print("Door is open!")
-        #             else:
-        #                 if was_open:
-        #                     reward -= 0.1
-
         # Unified toggle action (uni_toggle)
         elif action == self.actions.uni_toggle:
-            # Check if there's a cell in the forward direction
+            # Case 1: Forward cell exists (not empty)
             if fwd_cell:
                 # If carrying nothing and forward cell can be picked up, perform pickup
                 if self.carrying is None and fwd_cell.can_pickup():
@@ -559,19 +493,11 @@ class CustomEnv(MiniGridEnv):
                     reward += 0.1
                     # print("Item picked up!")
 
-                # If carrying an object and forward cell is empty, perform drop
-                elif self.carrying and not fwd_cell:
-                    self.grid.set(fwd_pos[0], fwd_pos[1], self.carrying)
-                    self.carrying.cur_pos = fwd_pos
-                    self.carrying = None
-                    reward -= 0.1
-                    # print("Item dropped!")
-
                 # If forward cell is a door, perform toggle
                 elif fwd_cell.type == "door":
                     was_open = fwd_cell.is_open
                     if self.any_key_opens_the_door:
-                        _door_toggle_any_colour(fwd_cell, self, fwd_pos)
+                        self._door_toggle_any_colour(fwd_cell, )
                     else:
                         fwd_cell.toggle(self, fwd_pos)
                     # Update rewards based on door status
@@ -582,9 +508,22 @@ class CustomEnv(MiniGridEnv):
                         reward -= 0.1
                         # print("Door is closed!")
 
-        # Done action (not used by default)
-        # elif action == self.actions.done:
-        #     pass
+            # Case 2: Forward cell is empty (None)
+            else:
+                # If carrying an object, drop it in the empty space
+                if self.carrying:
+                    self.grid.set(fwd_pos[0], fwd_pos[1], self.carrying)
+                    self.carrying.cur_pos = fwd_pos
+
+                    # Special case: if dropping a key, give different reward
+                    if self.carrying.type == "key":
+                        reward -= 0.05  # Small penalty for dropping a key
+                        # print("Key dropped!")
+                    else:
+                        reward -= 0.1  # Standard drop penalty
+                        # print("Item dropped!")
+
+                    self.carrying = None
 
         else:
             raise ValueError(f"Unknown action: {action}")
@@ -800,15 +739,14 @@ def flip_direction(direction, flip_mode):
 
 if __name__ == "__main__":
     env = CustomEnv(
-        txt_file_path='./maps/rand_door_key.txt',
-        rand_gen_shape=None,
+        json_file_path='../maps/door-key.json',
+        config=None,
         display_size=None,
         display_mode="random",
         random_rotate=True,
         random_flip=True,
-        custom_mission="Find the key and open the door.",
+        render_carried_objs=True,
         render_mode="human",
-        add_random_door_key=False,
     )
-    manual_control = ManualControl(env)  # Allows manual control for testing and visualization
+    manual_control = SimpleManualControl(env)  # Allows manual control for testing and visualization
     manual_control.start()  # Start the manual control interface
