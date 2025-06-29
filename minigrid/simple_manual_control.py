@@ -91,8 +91,9 @@ class SimpleManualControl(ManualControl):
         super().__init__(env, seed)
 
     def step(self, action: SimpleActions):
-        _, reward, terminated, truncated, _ = self.env.step(action)
+        obs, reward, terminated, truncated, _ = self.env.step(action)
         print(f"step={self.env.unwrapped.step_count}, reward={reward:.2f}")
+        # print(f"obs={obs}")
 
         if terminated:
             print("terminated!")

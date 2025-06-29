@@ -12,7 +12,6 @@ from minigrid.core.world_object import WorldObj
 from minigrid.minigrid_env import MiniGridEnv
 from gymnasium.core import ActType, ObsType
 from minigrid.core.constants import OBJECT_TO_IDX, COLOR_TO_IDX, STATE_TO_IDX, TILE_PIXELS
-from PIL import Image, ImageDraw, ImageFont
 
 from minigrid.simple_actions import SimpleActions
 from simple_manual_control import SimpleManualControl
@@ -115,116 +114,95 @@ class CustomEnv(MiniGridEnv):
 
     def render_with_carried_objects(self, full_image):
         """
-        Renders the image of the environment with an extra row at the bottom displaying the item
-        carried by the agent, if any. The agent can carry at most one item.
+        Renders the image of the environment with an extra row at the bottom and an extra column on the right,
+        displaying the item carried by the agent in the bottom-right corner, if any.
+        The agent can carry at most one item.
 
         :param full_image: The original image rendered by get_full_render.
-        :return: Modified image with an additional row displaying the carried item, if any.
+        :return: Modified image with additional row and column displaying the carried item, if any.
         """
         tile_size = self.tile_size
 
-        # Create a grey background for the carried item row
-        item_row = np.full((tile_size, tile_size, 3), fill_value=100, dtype=np.uint8)
+        # Get original image dimensions
+        full_height, full_width, _ = full_image.shape
 
-        # Check if the agent is carrying an object
+        # Grid line color in float32 format [0,1] - equivalent to (100, 100, 100) in uint8
+        grid_color = (100 / 255, 100 / 255, 100 / 255)
+
+        def create_empty_tile():
+            """Helper function to create an empty tile with grid lines"""
+            canvas = np.zeros((tile_size, tile_size, 3), dtype=np.float32)
+            fill_coords(canvas, point_in_rect(0, 0.031, 0, 1), grid_color)  # Left border
+            fill_coords(canvas, point_in_rect(0, 1, 0, 0.031), grid_color)  # Top border
+            canvas = np.clip(canvas, 0.0, 1.0)
+            return (canvas * 255).astype(np.uint8)
+
+        # Step 1: Add a column on the right
+        # Calculate how many tiles we need for the height
+        num_height_tiles = full_height // tile_size
+
+        # Create the right column filled with empty tiles
+        right_column = np.zeros((full_height, tile_size, 3), dtype=np.uint8)
+
+        for i in range(num_height_tiles):
+            empty_tile = create_empty_tile()
+            start_y = i * tile_size
+            end_y = start_y + tile_size
+            right_column[start_y:end_y, :, :] = empty_tile
+
+        # Handle any remaining pixels in height
+        remaining_height = full_height % tile_size
+        if remaining_height > 0:
+            empty_tile = create_empty_tile()
+            start_y = num_height_tiles * tile_size
+            right_column[start_y:, :, :] = empty_tile[:remaining_height, :, :]
+
+        # Combine original image with right column
+        image_with_column = np.hstack([full_image, right_column])
+
+        # Step 2: Add a row at the bottom
+        new_width = image_with_column.shape[1]
+        num_width_tiles = new_width // tile_size
+
+        # Create the bottom row filled with empty tiles
+        bottom_row = np.zeros((tile_size, new_width, 3), dtype=np.uint8)
+
+        for i in range(num_width_tiles):
+            empty_tile = create_empty_tile()
+            start_x = i * tile_size
+            end_x = start_x + tile_size
+            bottom_row[:, start_x:end_x, :] = empty_tile
+
+        # Handle any remaining pixels in width
+        remaining_width = new_width % tile_size
+        if remaining_width > 0:
+            empty_tile = create_empty_tile()
+            start_x = num_width_tiles * tile_size
+            bottom_row[:, start_x:, :] = empty_tile[:, :remaining_width, :]
+
+        # Step 3: If the agent is carrying an object, render it in the bottom-right corner
         if self.carrying is not None:
             # Create a canvas for rendering the carried object
-            # Use float32 format for proper rendering, then convert to uint8
             canvas = np.zeros((tile_size, tile_size, 3), dtype=np.float32)
 
-            # Render the actual object using its render method
+            # First render the empty cell background
+            fill_coords(canvas, point_in_rect(0, 0.031, 0, 1), grid_color)  # Left border
+            fill_coords(canvas, point_in_rect(0, 1, 0, 0.031), grid_color)  # Top border
+
+            # Then render the actual object on top
             self.carrying.render(canvas)
 
             # Convert from float32 [0,1] to uint8 [0,255]
             canvas = np.clip(canvas, 0.0, 1.0)
-            item_row = (canvas * 255).astype(np.uint8)
+            item_tile = (canvas * 255).astype(np.uint8)
 
-            # If the rendered object is all black (empty), use grey background
-            if np.all(item_row == 0):
-                item_row = np.full((tile_size, tile_size, 3), fill_value=100, dtype=np.uint8)
+            # Place the item tile in the bottom-right corner of the bottom row
+            bottom_row[:, -tile_size:, :] = item_tile
 
-        # Extend the original image with this new row at the bottom
-        full_height, full_width, _ = full_image.shape
-
-        # Create a full-width row with grey background
-        full_image_width = full_image.shape[1]
-        item_row_full = np.full((tile_size, full_image_width, 3), fill_value=100, dtype=np.uint8)
-
-        # Place the item tile on the right side of the row
-        item_row_full[:, -tile_size:, :] = item_row
-
-        # Combine the original image with the new item row
-        output_image = np.vstack([full_image, item_row_full])
+        # Step 4: Combine everything
+        output_image = np.vstack([image_with_column, bottom_row])
 
         return output_image
-
-    def _get_object_symbol(self, object_name):
-        """
-        Get the letter representing the object.
-        This function returns a letter for the object.
-        """
-        if object_name == "ball":
-            return "B"  # Use 'B' to represent the ball
-        elif object_name == "box":
-            return "X"  # Use 'X' to represent the box
-        else:
-            # Use the first letter of the object name as its symbol for other objects
-            return object_name[0].upper() if object_name else "?"  # Return '?' if the object has no valid name
-
-    def _draw_symbol_on_tile(self, tile, symbol, colour_name="black"):
-        """
-        Draw the given symbol (a letter) on a larger tile and resize it to the actual tile size.
-        This helps improve the clarity and centring of the symbol.
-
-        :param tile: The tile image (a NumPy array) where the symbol will be drawn.
-        :param symbol: The symbol (a string, e.g., 'K' for key) to be drawn on the tile.
-        :param colour_name: The colour of the object to draw on the tile.
-        :return: The tile image with the symbol drawn on it, resized to the original tile size.
-        """
-        tile_size = tile.shape[0]  # Original tile size
-        render_size = int(tile_size * 1.5)
-
-        # Create a larger tile for rendering
-        large_tile = np.full((render_size, render_size, 3), fill_value=100, dtype=np.uint8)
-
-        # Convert NumPy array (large tile) to PIL Image
-        large_tile_image = Image.fromarray(large_tile)
-
-        # Create a drawing context for the larger tile
-        draw = ImageDraw.Draw(large_tile_image)
-
-        # Load a font, use default PIL font if no TTF file is available
-        try:
-            font = ImageFont.truetype("arial.ttf", size=render_size // 2)  # Larger font size for better clarity
-        except IOError:
-            font = ImageFont.load_default()
-
-        # Get the size of the large tile
-        tile_width, tile_height = large_tile_image.size
-
-        # Get the bounding box of the symbol to centre it on the tile
-        bbox = draw.textbbox((0, 0), symbol, font=font)
-        text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-        # Calculate the position to centre the text
-        position = ((tile_width - text_width) // 2, (tile_height - text_height) // 2)
-
-        # Get the colour for the symbol from the colour name
-        colour_rgb = COLORS.get(colour_name, [0, 0, 0])  # Default to black if colour_name is invalid
-
-        # Draw a filled rectangle with the colour in the large tile
-        draw.rectangle([0, 0, tile_width, tile_height], fill=tuple(colour_rgb))
-
-        # Draw the symbol in the centre of the large tile
-        draw.text(position, symbol, font=font, fill=(0, 0, 0))
-
-        # Convert the large tile back to a NumPy array
-        large_tile_np = np.array(large_tile_image)
-
-        # Resize the large tile back to the original tile size
-        tile_resized = Image.fromarray(large_tile_np).resize((tile_size, tile_size))
-
-        return np.array(tile_resized)
 
     def determine_layout_size(self) -> int:
         if self.txt_file_path:
