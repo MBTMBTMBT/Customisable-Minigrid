@@ -16,6 +16,18 @@ from minigrid.core.constants import OBJECT_TO_IDX, COLOR_TO_IDX, STATE_TO_IDX, T
 from minigrid.simple_actions import SimpleActions
 from simple_manual_control import SimpleManualControl
 
+DEFAULT_REWARD_DICT = {
+    "sparse": True,
+    "step_penalty": -0.1,
+    "goal_reward": 0.0,
+    "lava_penalty": 0.0,
+    "pickup_reward": 0.0,
+    "door_open_reward": 0.0,
+    "door_close_penalty": 0.0,
+    "key_drop_penalty": 0.0,
+    "item_drop_penalty": 0.0,
+}
+
 
 class CustomEnv(MiniGridEnv):
     """
@@ -32,27 +44,42 @@ class CustomEnv(MiniGridEnv):
         display_mode (str): "middle" or "random" placement of layout in the full grid.
         random_rotate (bool): Whether to randomly rotate the layout (0°, 90°, 180°, 270°).
         random_flip (bool): Whether to randomly flip the layout horizontally.
-        mission (str): Text description of the agent’s task.
+        mission (str): Text description of the agent's task.
         render_carried_objs (bool): If True, renders the carried object in a separate visual tile.
         any_key_opens_the_door (bool): If True, any key can open any door regardless of color.
+        reward_config (dict): Dictionary containing reward settings and values.
     """
 
     def __init__(
-        self,
-        json_file_path: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None,
-        display_size: Optional[int] = None,
-        display_mode: Optional[str] = "middle",
-        random_rotate: bool = False,
-        random_flip: bool = False,
-        custom_mission: str = "Explore and interact with objects.",
-        max_steps: int = 100000,
-        render_carried_objs: bool = True,
-        any_key_opens_the_door: bool = False,
-        **kwargs,
+            self,
+            json_file_path: Optional[str] = None,
+            config: Optional[Dict[str, Any]] = None,
+            display_size: Optional[int] = None,
+            display_mode: Optional[str] = "middle",
+            random_rotate: bool = False,
+            random_flip: bool = False,
+            custom_mission: str = "Explore and interact with objects.",
+            max_steps: int = 100000,
+            render_carried_objs: bool = True,
+            any_key_opens_the_door: bool = False,
+            reward_config: Optional[Dict[str, Any]] = None,
+            **kwargs,
     ) -> None:
         """
         Initialize the environment from either a file or a config dictionary.
+
+        Args:
+            reward_config: Dictionary containing reward configuration. If None, uses default values.
+                          Available keys:
+                          - sparse (bool): If True, only return total reward at termination
+                          - step_penalty (float): Penalty for each step taken
+                          - goal_reward (float): Reward for reaching the goal
+                          - lava_penalty (float): Penalty for stepping on lava
+                          - pickup_reward (float): Reward for picking up an item
+                          - door_open_reward (float): Reward for opening a door
+                          - door_close_penalty (float): Penalty for closing a door
+                          - key_drop_penalty (float): Penalty for dropping a key
+                          - item_drop_penalty (float): Penalty for dropping an item
         """
         # Enforce exclusive choice: exactly one of the two must be provided
         assert (json_file_path is not None) ^ (config is not None), \
@@ -67,6 +94,15 @@ class CustomEnv(MiniGridEnv):
         self.mission = custom_mission
         self.tile_size = 32
         self.skip_reset = False
+
+        if reward_config is None:
+            self.reward_config = DEFAULT_REWARD_DICT
+        else:
+            # Merge provided config with defaults
+            self.reward_config = {**DEFAULT_REWARD_DICT, **reward_config}
+
+        # Initialize cumulative reward for sparse mode
+        self.cumulative_reward = 0.0
 
         # Load config from file if needed
         if json_file_path is not None:
@@ -387,6 +423,9 @@ class CustomEnv(MiniGridEnv):
         """
         Reset the environment. Always regenerates the grid based on the JSON layout.
         """
+        # Reset cumulative reward for sparse mode
+        self.cumulative_reward = 0.0
+
         # Generate new grid from JSON layout
         self._gen_grid(self.width, self.height)
 
@@ -422,7 +461,8 @@ class CustomEnv(MiniGridEnv):
     ) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         self.step_count += 1
 
-        reward = -0.05  # give negative reward for normal steps
+        # Initialize reward with step penalty
+        reward = self.reward_config["step_penalty"]
 
         terminated = False
         truncated = False
@@ -449,15 +489,10 @@ class CustomEnv(MiniGridEnv):
                 self.agent_pos = tuple(fwd_pos)
             if fwd_cell is not None and fwd_cell.type == "goal":
                 terminated = True
-                reward = 1  # give settled 1 as reward,
-                # print("Succeeded!")
-                # instead of the original 1 - 0.9 * (self.step_count / self.max_steps)
+                reward = self.reward_config["goal_reward"]
             if fwd_cell is not None and fwd_cell.type == "lava":
                 terminated = True
-                reward = -1
-
-            # if fwd_cell is not None and (fwd_cell.type == "wall" or fwd_cell.type == "door" and not fwd_cell.is_open):
-            #     reward -= 0.05
+                reward = self.reward_config["lava_penalty"]
 
         # Unified toggle action (uni_toggle)
         elif action == self.actions.uni_toggle:
@@ -468,8 +503,7 @@ class CustomEnv(MiniGridEnv):
                     self.carrying = fwd_cell
                     self.carrying.cur_pos = np.array([-1, -1])
                     self.grid.set(fwd_pos[0], fwd_pos[1], None)
-                    reward += 0.1
-                    # print("Item picked up!")
+                    reward += self.reward_config["pickup_reward"]
 
                 # If forward cell is a door, perform toggle
                 elif fwd_cell.type == "door":
@@ -480,11 +514,9 @@ class CustomEnv(MiniGridEnv):
                         fwd_cell.toggle(self, fwd_pos)
                     # Update rewards based on door status
                     if fwd_cell.is_open and not was_open:
-                        reward += 0.1
-                        # print("Door is open!")
+                        reward += self.reward_config["door_open_reward"]
                     elif not fwd_cell.is_open and was_open:
-                        reward -= 0.1
-                        # print("Door is closed!")
+                        reward += self.reward_config["door_close_penalty"]
 
             # Case 2: Forward cell is empty (None)
             else:
@@ -495,11 +527,9 @@ class CustomEnv(MiniGridEnv):
 
                     # Special case: if dropping a key, give different reward
                     if self.carrying.type == "key":
-                        reward -= 0.05  # Small penalty for dropping a key
-                        # print("Key dropped!")
+                        reward += self.reward_config["key_drop_penalty"]
                     else:
-                        reward -= 0.1  # Standard drop penalty
-                        # print("Item dropped!")
+                        reward += self.reward_config["item_drop_penalty"]
 
                     self.carrying = None
 
@@ -509,31 +539,41 @@ class CustomEnv(MiniGridEnv):
         if self.step_count >= self.max_steps:
             truncated = True
 
+        # Handle sparse vs dense reward mode
+        if self.reward_config["sparse"]:
+            # Accumulate reward but only return it at termination
+            self.cumulative_reward += reward
+            if terminated or truncated:
+                # Return total accumulated reward
+                returned_reward = self.cumulative_reward
+            else:
+                # Return zero reward for non-terminal steps
+                returned_reward = 0.0
+        else:
+            # Return immediate reward (dense mode)
+            returned_reward = reward
+
         if self.render_mode == "human":
             self.render()
 
         obs = self.gen_obs()
 
+        # Set carrying observation
         obs["carrying"] = {
             "carrying": 1,
             "carrying_colour": 0,
-            # "carrying_contains": carrying_contains,
-            # "carrying_contains_colour": carrying_contains_colour,
         }
 
         if self.carrying is not None and self.carrying != 0:
             carrying = OBJECT_TO_IDX[self.carrying.type]
             carrying_colour = COLOR_TO_IDX[self.carrying.color]
-            # carrying_contains = 0 if self.carrying.contains is None else OBJECT_TO_IDX[self.carrying.contains.type]
-            # carrying_contains_colour = 0 if self.carrying.contains is None else COLOR_TO_IDX[self.carrying.contains.color]
 
             obs["carrying"] = {
                 "carrying": carrying,
                 "carrying_colour": carrying_colour,
-                # "carrying_contains": carrying_contains,
-                # "carrying_contains_colour": carrying_contains_colour,
             }
 
+        # Set overlap observation
         obs["overlap"] = {
             "obj": 0,
             "colour": 0,
@@ -547,7 +587,7 @@ class CustomEnv(MiniGridEnv):
                 "colour": overlap_colour,
             }
 
-        return obs, reward, terminated, truncated, {}
+        return obs, returned_reward, terminated, truncated, {}
 
     def set_env_by_obs(self, obs: ObsType):
         """
