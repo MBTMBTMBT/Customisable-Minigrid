@@ -39,43 +39,50 @@ def _door_toggle_any_colour(door, env, pos):
 
 class CustomEnv(MiniGridEnv):
     """
-    A custom MiniGrid environment that loads its layout and object properties from a text file.
+    A custom MiniGrid environment that loads its layout from a structured JSON configuration.
+
+    This environment does not support random generation. All objects, colors, positions, and agent settings
+    must be defined either in a JSON file or passed as a Python dictionary.
+    Later layers overwrite earlier ones. Only 'door' objects are allowed to overwrite others (e.g., walls).
 
     Attributes:
-        txt_file_path (str): Path to the text file containing the environment layout.
-        layout_size (int): The size of the environment, either specified or determined from the file.
-        agent_start_pos (tuple[int, int]): Starting position of the agent.
-        agent_start_dir (int): Initial direction the agent is facing.
-        mission (str): Custom mission description.
+        txt_file_path (Optional[str]): Path to the JSON layout file.
+        config (Optional[dict]): Parsed layout configuration dictionary.
+        display_size (int): Size of the visualized grid (can be larger than the layout).
+        agent_start_pos (Optional[Tuple[int, int]]): Manually specified agent start position; overrides agent layer.
+        agent_start_dir (Optional[int]): Initial agent direction (0=right, ..., 3=up); random if not set.
+        display_mode (str): "middle" or "random" placement of layout in the full grid.
+        random_rotate (bool): Whether to randomly rotate the layout (0°, 90°, 180°, 270°).
+        random_flip (bool): Whether to randomly flip the layout horizontally.
+        mission (str): Text description of the agent’s task.
+        render_carried_objs (bool): If True, renders the carried object in a separate visual tile.
+        any_key_opens_the_door (bool): If True, any key can open any door regardless of color.
     """
 
     def __init__(
-            self,
-            txt_file_path: str,
-            display_size: Optional[int] = None,
-            display_mode: Optional[str] = "middle",
-            random_rotate: bool = False,
-            random_flip: bool = False,
-            agent_start_pos: Optional[Tuple[int, int]] = None,
-            agent_start_dir: Optional[int] = None,
-            custom_mission: str = "Explore and interact with objects.",
-            max_steps: int = 100000,
-            render_carried_objs: bool = True,
-            any_key_opens_the_door: bool = False,
-            rand_colours: Optional[List[str]] = None,
-            **kwargs,
+        self,
+        txt_file_path: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        display_size: Optional[int] = None,
+        display_mode: Optional[str] = "middle",
+        random_rotate: bool = False,
+        random_flip: bool = False,
+        agent_start_pos: Optional[Tuple[int, int]] = None,
+        agent_start_dir: Optional[int] = None,
+        custom_mission: str = "Explore and interact with objects.",
+        max_steps: int = 100000,
+        render_carried_objs: bool = True,
+        any_key_opens_the_door: bool = False,
+        **kwargs,
     ) -> None:
         """
-        Initialize the custom environment using a structured JSON layout file.
-        Random map generation is removed. Only JSON file is supported.
+        Initialize the environment from either a file or a config dictionary.
         """
-        assert txt_file_path is not None, "'txt_file_path' (JSON file) must be provided."
-
-        if rand_colours is None:
-            rand_colours = ['R', 'G', 'B', 'P', 'Y', 'E']
+        # Enforce exclusive choice: exactly one of the two must be provided
+        assert (txt_file_path is not None) ^ (config is not None), \
+            "You must provide either 'txt_file_path' or 'config', but not both."
 
         self.txt_file_path = txt_file_path
-        self.rand_colours = rand_colours
         self.display_mode = display_mode
         self.random_rotate = random_rotate
         self.random_flip = random_flip
@@ -84,13 +91,18 @@ class CustomEnv(MiniGridEnv):
         self.agent_start_pos = agent_start_pos
         self.agent_start_dir = agent_start_dir
         self.mission = custom_mission
-        self.tile_size = 16
+        self.tile_size = 32
         self.skip_reset = False
 
-        # Read JSON layout once to determine environment size
-        with open(self.txt_file_path, 'r') as f:
-            config = json.load(f)
-        height, width = config["height_width"]
+        # Load config from file if needed
+        if txt_file_path is not None:
+            with open(txt_file_path, 'r') as f:
+                self.config = json.load(f)
+        else:
+            self.config = config
+
+        # Determine layout size
+        height, width = self.config["height_width"]
         layout_size = max(height, width)
 
         if display_size is None:
@@ -98,13 +110,14 @@ class CustomEnv(MiniGridEnv):
         else:
             self.display_size = display_size
 
-        assert display_mode in ["middle", "random"]
-        assert self.display_size >= layout_size
+        assert display_mode in ["middle", "random"], "Invalid display_mode"
+        assert self.display_size >= layout_size, "display_size must be >= layout layout_size"
 
+        # Default agent direction
         if self.agent_start_dir is None:
             self.agent_start_dir = random.randint(0, 3)
 
-        # Initialize parent MiniGridEnv
+        # Initialize parent class
         super().__init__(
             mission_space=MissionSpace(mission_func=lambda: custom_mission),
             grid_size=self.display_size,
@@ -278,16 +291,17 @@ class CustomEnv(MiniGridEnv):
     def _gen_grid(self, width: int, height: int) -> None:
         """
         Generate the environment grid from a multi-layer JSON layout.
-        Layers are processed in order; later layers overwrite earlier ones.
+        Layers are applied in order. Only doors are allowed to overwrite existing objects (e.g., walls).
+        All other objects skip occupied positions to prevent overlap.
         """
         self.grid = Grid(width, height)
 
-        # Load JSON config and metadata
-        config = self._read_file()
+        # Load JSON config
+        config = self.config
         H, W = config['height_width']
         layers = config['layers']
 
-        # Calculate placement anchor
+        # Compute anchor offsets
         free_width = self.display_size - W
         free_height = self.display_size - H
         if self.display_mode == "middle":
@@ -297,12 +311,13 @@ class CustomEnv(MiniGridEnv):
             anchor_x = random.choice(range(max(free_width, 1))) if free_width > 0 else 0
             anchor_y = random.choice(range(max(free_height, 1))) if free_height > 0 else 0
         else:
-            raise ValueError("Invalid display mode.")
+            raise ValueError("Invalid display mode")
 
+        # Apply random rotation and flip
         image_direction = random.choice([0, 1, 2, 3]) if self.random_rotate else 0
         flip = random.choice([0, 1]) if self.random_flip else 0
 
-        # Track filled positions to prevent overlap
+        # Track filled positions to prevent unwanted overlap
         filled = set()
         key_positions = []
         goal_positions = []
@@ -313,35 +328,42 @@ class CustomEnv(MiniGridEnv):
             obj_type = layer["obj"]
             colour = layer.get("colour", None)
             status = layer.get("status", None)
-            orientation = layer.get("orientation", "random")
+            orientation = layer.get("orientation", "random") if obj_type == "agent" else orientation
             dist = layer.get("distribution", "all")
             mat = layer["matrix"]
 
-            # Collect all candidate positions
-            candidates = [
+            # Collect all candidate positions from the matrix
+            raw_positions = [
                 (x, y) for y in range(H) for x in range(W) if mat[y][x] == 1
             ]
-            candidates = [(anchor_x + x, anchor_y + y) for x, y in candidates]
-            candidates = [
-                rotate_coordinate(x, y, image_direction, self.display_size) for x, y in candidates
-            ]
-            candidates = [
-                flip_coordinate(x, y, flip, self.display_size) for x, y in candidates
-            ]
-            candidates = [p for p in candidates if p not in filled]
+            # Transform to actual coordinates with anchor, rotation, and flip
+            candidates = []
+            for x, y in raw_positions:
+                x_shift, y_shift = anchor_x + x, anchor_y + y
+                x_rot, y_rot = rotate_coordinate(x_shift, y_shift, image_direction, self.display_size)
+                x_final, y_final = flip_coordinate(x_rot, y_rot, flip, self.display_size)
+                candidates.append((x_final, y_final))
 
-            if dist == "all":
-                used = candidates
-            elif dist == "one":
-                if len(candidates) < 1:
-                    raise ValueError(f"No available positions for object '{layer['name']}'")
-                used = [random.choice(candidates)]
-            elif isinstance(dist, float):
-                count = max(1, int(len(candidates) * dist))
-                used = random.sample(candidates, min(count, len(candidates)))
+            # Only doors can overwrite filled positions
+            if obj_type == "door":
+                available = candidates
             else:
-                raise ValueError(f"Unknown distribution: {dist}")
+                available = [p for p in candidates if p not in filled]
 
+            # Select final positions based on distribution
+            if dist == "all":
+                used = available
+            elif dist == "one":
+                if len(available) < 1:
+                    raise ValueError(f"No available positions for object '{layer['name']}'")
+                used = [random.choice(available)]
+            elif isinstance(dist, float):
+                count = max(1, int(len(available) * dist))
+                used = random.sample(available, min(count, len(available)))
+            else:
+                raise ValueError(f"Unknown distribution type: {dist}")
+
+            # Place objects at selected positions
             for pos in used:
                 x, y = pos
                 obj = self.create_object(obj_type, colour, status)
@@ -351,12 +373,11 @@ class CustomEnv(MiniGridEnv):
                     key_positions.append((x, y, colour))
                 elif obj_type == "goal":
                     goal_positions.append((x, y))
-                elif obj_type == "door":
-                    pass  # already added
                 self.grid.set(x, y, obj)
-                filled.add(pos)
+                if obj_type != "door":
+                    filled.add((x, y))
 
-        # Place agent
+        # Determine agent position
         if self.agent_start_pos is not None:
             x, y = self.agent_start_pos
             x, y = anchor_x + x, anchor_y + y
@@ -368,11 +389,47 @@ class CustomEnv(MiniGridEnv):
         else:
             raise ValueError("No available agent position")
 
-        dir_map = {"up": 3, "right": 0, "down": 1, "left": 2, "random": random.randint(0, 3)}
+        # Set agent orientation
+        dir_map = {"right": 0, "down": 1, "left": 2, "up": 3, "random": random.randint(0, 3)}
         self.agent_dir = flip_direction(rotate_direction(dir_map.get(orientation, 0), image_direction), flip)
 
-        # Handle carried object (none by default)
+        # No object is carried at start
         self.carrying = None
+
+    def create_object(self, obj_type: str, color: Optional[str], status: Optional[str]) -> Optional[WorldObj]:
+        """
+        Create a MiniGrid object given type, color and status.
+
+        Args:
+            obj_type: Type of the object, like "wall", "key", "door", etc.
+            color: Optional color (e.g., red, blue)
+            status: Optional status (e.g., locked, open)
+
+        Returns:
+            MiniGrid object or None
+        """
+        if obj_type == "wall":
+            return Wall()
+        elif obj_type == "floor":
+            return Floor()
+        elif obj_type == "key":
+            return Key(color)
+        elif obj_type == "ball":
+            return Ball(color)
+        elif obj_type == "box":
+            return Box(color)
+        elif obj_type == "lava":
+            return Lava()
+        elif obj_type == "goal":
+            return Goal()
+        elif obj_type == "door":
+            is_open = status == "open"
+            is_locked = status == "locked"
+            return Door(color, is_open=is_open, is_locked=is_locked)
+        elif obj_type == "agent":
+            return None  # agent is handled separately
+        else:
+            return None
 
     def reset(
             self,
