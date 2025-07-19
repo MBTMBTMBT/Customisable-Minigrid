@@ -1,8 +1,6 @@
 import json
 import random
-import warnings
-from enum import IntEnum
-from typing import Optional, Tuple, List, Dict, Any, SupportsFloat
+from typing import Optional, Dict, Any, SupportsFloat
 
 from gymnasium import spaces
 from minigrid.core.grid import Grid
@@ -32,11 +30,9 @@ DEFAULT_REWARD_DICT = {
 class CustomEnv(MiniGridEnv):
     """
     A custom MiniGrid environment that loads its layout from a structured JSON configuration.
-
     This environment does not support random generation. All objects, colors, positions, and agent settings
     must be defined either in a JSON file or passed as a Python dictionary.
     Later layers overwrite earlier ones. Only 'door' objects are allowed to overwrite others (e.g., walls).
-
     Attributes:
         json_file_path (Optional[str]): Path to the JSON layout file.
         config (Optional[dict]): Parsed layout configuration dictionary.
@@ -67,7 +63,6 @@ class CustomEnv(MiniGridEnv):
     ) -> None:
         """
         Initialize the environment from either a file or a config dictionary.
-
         Args:
             reward_config: Dictionary containing reward configuration. If None, uses default values.
                           Available keys:
@@ -81,6 +76,7 @@ class CustomEnv(MiniGridEnv):
                           - key_drop_penalty (float): Penalty for dropping a key
                           - item_drop_penalty (float): Penalty for dropping an item
         """
+
         # Enforce exclusive choice: exactly one of the two must be provided
         assert (json_file_path is not None) ^ (config is not None), \
             "You must provide either 'json_file_path' or 'config', but not both."
@@ -153,7 +149,6 @@ class CustomEnv(MiniGridEnv):
         Renders the image of the environment with an extra row at the bottom and an extra column on the right,
         displaying the item carried by the agent in the bottom-right corner, if any.
         The agent can carry at most one item.
-
         :param full_image: The original image rendered by get_full_render.
         :return: Modified image with additional row and column displaying the carried item, if any.
         """
@@ -370,12 +365,10 @@ class CustomEnv(MiniGridEnv):
     def create_object(self, obj_type: str, color: Optional[str], status: Optional[str]) -> Optional[WorldObj]:
         """
         Create a MiniGrid object given type, color and status.
-
         Args:
             obj_type: Type of the object, like "wall", "key", "door", etc.
             color: Optional color (e.g., red, blue)
             status: Optional status (e.g., locked, open)
-
         Returns:
             MiniGrid object or None
         """
@@ -589,91 +582,14 @@ class CustomEnv(MiniGridEnv):
 
         return obs, returned_reward, terminated, truncated, {}
 
-    def set_env_by_obs(self, obs: ObsType):
-        """
-        NOTES: setting the environment this way, Box will always be empty!!!
-        """
-        # self.skip_reset = True
-        # values needed:
-        # self.agent_pos, self.agent_dir
-        # self.grid needs to be reset
-        # self.carrying, and everything within this carried object
-        image = obs["image"]
-        object_channel = image[:, :, 0]
-        indices = np.argwhere(object_channel == OBJECT_TO_IDX["agent"])
-        assert len(indices) == 1, "Only one agent can be in the map."
-        self.agent_pos = tuple(indices[0])
-        self.agent_dir = image[:, :, 2][self.agent_pos]
-        for x in range(image.shape[0]):
-            for y in range(image.shape[1]):
-                obj = self.int_to_object(int(image[x, y, 0]), IDX_TO_COLOR[image[x, y, 1]])
-                if obj is not None and obj.type == "door":
-                    obj.is_open = image[x, y, 2] == STATE_TO_IDX["open"]
-                    obj.is_locked = image[x, y, 2] == STATE_TO_IDX["locked"]
-                self.grid.set(x, y, obj)
-        if obs["overlap"]["obj"] is not None:
-            obj = self.int_to_object(obs["overlap"]["obj"][0], IDX_TO_COLOR[obs["overlap"]["colour"][0]])
-            if obj is not None and obj.type == "door":
-                obj.is_open = True  # overlap - for sure it's open
-            self.grid.set(self.agent_pos[0], self.agent_pos[1], obj)
-        self.carrying = self.int_to_object(obs['carrying']['carrying'][0], IDX_TO_COLOR[obs['carrying']['carrying_colour'][0]])
-        if self.carrying is not None:
-            self.carrying.cur_pos = np.array([-1, -1])
-        self.skip_reset = True
-        return self.reset()
-
-    def char_to_colour(self, char: str) -> Optional[str]:
-        """
-        Maps a single character to a color name supported by MiniGrid objects.
-
-        Args:
-            char (str): A character representing a color.
-
-        Returns:
-            Optional[str]: The name of the color, or None if the character is not recognized.
-        """
-        color_map = {'R': 'red', 'G': 'green', 'B': 'blue', 'P': 'purple', 'Y': 'yellow', 'E': 'grey', '_': '_'}
-        return color_map.get(char.upper(), None)
-
-    def char_to_object(self, char: str, color: str) -> Optional[WorldObj]:
-        """
-        Maps a character (and its associated color) to a MiniGrid object.
-
-        Args:
-            char (str): A character representing an object type.
-            color (str): The color of the object.
-
-        Returns:
-            Optional[WorldObj]: The MiniGrid object corresponding to the character and color, or None if unrecognized.
-        """
-        obj_map = {
-            'W': lambda: Wall(), 'F': lambda: Floor(), 'B': lambda: Ball(color),
-            'K': lambda: Key(color), 'X': lambda: Box(color), 'D': lambda: Door(color, is_locked=True),
-            'G': lambda: Goal(), 'L': lambda: Lava(),
-        }
-        constructor = obj_map.get(char, None)
-        return constructor() if constructor else None
-
-    def int_to_object(self, val: int, color: str) -> Optional[WorldObj]:
-        obj_str = IDX_TO_OBJECT[val]
-        obj_map = {
-            'wall': lambda: Wall(), 'floor': lambda: Floor(), 'ball': lambda: Ball(color),
-            'key': lambda: Key(color), 'box': lambda: Box(color), 'door': lambda: Door(color, is_locked=True),
-            'goal': lambda: Goal(), 'lava': lambda: Lava(),
-        }
-        constructor = obj_map.get(obj_str, None)
-        return constructor() if constructor else None
-
 
 def rotate_coordinate(x, y, rotation_mode, n):
     """
     Rotate a 2D coordinate in a gridworld.
-
     Parameters:
     x, y (int): Original coordinates.
     rotation_mode (int): Rotation mode (0, 1, 2, 3).
     n (int): Dimension of the matrix.
-
     Returns:
     tuple: The new coordinates (new_x, new_y) after rotation.
     """
@@ -696,12 +612,10 @@ def rotate_coordinate(x, y, rotation_mode, n):
 def flip_coordinate(x, y, flip_mode, n):
     """
     Flip a 2D coordinate in a gridworld along the x-axis.
-
     Parameters:
     x, y (int): Original coordinates.
     flip_mode (int): Flip mode (0 for no flip, 1 for flip along x-axis).
     n (int): Dimension of the matrix.
-
     Returns:
     tuple: The new coordinates (new_x, new_y) after flipping.
     """
@@ -718,11 +632,9 @@ def flip_coordinate(x, y, flip_mode, n):
 def rotate_direction(direction, rotation_mode):
     """
     Rotate a direction in a gridworld.
-
     Parameters:
     direction (int): Original direction (0, 1, 2, 3).
     rotation_mode (int): Rotation mode (0, 1, 2, 3).
-
     Returns:
     int: New direction after rotation.
     """
@@ -736,11 +648,9 @@ def rotate_direction(direction, rotation_mode):
 def flip_direction(direction, flip_mode):
     """
     Flip a direction in a gridworld along the x-axis.
-
     Parameters:
     direction (int): Original direction (0, 1, 2, 3).
     flip_mode (int): Flip mode (0 for no flip, 1 for flip).
-
     Returns:
     int: New direction after flipping.
     """
