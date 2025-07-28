@@ -583,6 +583,313 @@ class CustomEnv(MiniGridEnv):
         return obs, returned_reward, terminated, truncated, {}
 
 
+def encode_state(self) -> str:
+    """
+    Encode the current environment state into a compact string representation.
+    Format: <W>x<H>:<static_objects>:<dynamic_objects>:<agent_state>
+
+    Returns:
+        str: Encoded state string that uniquely represents the environment
+    """
+    # Get grid dimensions
+    width, height = self.width, self.height
+
+    # Color mapping for compact representation
+    color_map = {
+        'red': 'r', 'green': 'g', 'blue': 'b',
+        'purple': 'p', 'yellow': 'y', 'orange': 'o'
+    }
+
+    # Object type mapping for compact representation
+    obj_map = {
+        'wall': 'W', 'floor': 'F', 'lava': 'L', 'goal': 'G',
+        'key': 'K', 'ball': 'B', 'box': 'X', 'door': 'D'
+    }
+
+    # Collect objects by type in alphabetical order
+    object_groups = {
+        'B': [],  # Ball
+        'D': [],  # Door
+        'F': [],  # Floor
+        'G': [],  # Goal
+        'K': [],  # Key
+        'L': [],  # Lava
+        'W': [],  # Wall
+        'X': []  # Box
+    }
+
+    # Scan the entire grid to collect objects
+    for y in range(height):
+        for x in range(width):
+            pos = y * width + x  # Convert to linear index
+            obj = self.grid.get(x, y)
+
+            if obj is not None:
+                obj_type = obj_map.get(obj.type)
+                if obj_type:
+                    if obj_type == 'D':  # Door needs special handling for state
+                        color_code = color_map.get(obj.color, obj.color[0] if obj.color else '')
+                        if obj.is_locked:
+                            state_code = 'l'
+                        elif obj.is_open:
+                            state_code = 'o'
+                        else:
+                            state_code = 'c'
+                        door_encoding = f"{obj_type}_{color_code}_{state_code}@{pos}"
+                        object_groups[obj_type].append((pos, door_encoding))
+                    elif hasattr(obj, 'color') and obj.color:  # Objects with color
+                        color_code = color_map.get(obj.color, obj.color[0] if obj.color else '')
+                        obj_encoding = f"{obj_type}_{color_code}@{pos}"
+                        object_groups[obj_type].append((pos, obj_encoding))
+                    else:  # Objects without color
+                        obj_encoding = f"{obj_type}@{pos}"
+                        object_groups[obj_type].append((pos, obj_encoding))
+
+    # Build object sections, grouping same types and sorting by position
+    object_sections = []
+    for obj_type in sorted(object_groups.keys()):
+        if object_groups[obj_type]:
+            # Sort by position for deterministic encoding
+            sorted_objects = sorted(object_groups[obj_type], key=lambda x: x[0])
+
+            # Group objects of same type and attributes
+            grouped = {}
+            for pos, encoding in sorted_objects:
+                # Extract the part before '@' as the key
+                key = encoding.split('@')[0]
+                if key not in grouped:
+                    grouped[key] = []
+                grouped[key].append(pos)
+
+            # Create compact representation for each group
+            group_encodings = []
+            for key in sorted(grouped.keys()):
+                positions = sorted(grouped[key])
+                pos_str = ','.join(map(str, positions))
+                group_encodings.append(f"{key}@{pos_str}")
+
+            object_sections.append(';'.join(group_encodings))
+        else:
+            object_sections.append('')  # Empty section for missing object types
+
+    # Build agent state
+    agent_pos = self.agent_pos[1] * width + self.agent_pos[0]  # Convert to linear index
+    agent_dir = self.agent_dir
+
+    if self.carrying is not None:
+        carry_type = obj_map.get(self.carrying.type, self.carrying.type)
+        if hasattr(self.carrying, 'color') and self.carrying.color:
+            carry_color = color_map.get(self.carrying.color, self.carrying.color[0])
+            carrying = f"{carry_type}_{carry_color}"
+        else:
+            carrying = carry_type
+    else:
+        carrying = "none"
+
+    agent_state = f"A@{agent_pos}_{agent_dir}_{carrying}"
+
+    # Combine all parts
+    grid_size = f"{width}x{height}"
+    objects_part = ':'.join(object_sections)
+
+    return f"{grid_size}:{objects_part}:{agent_state}"
+
+
+def decode_state(self, encoded_state: str) -> None:
+    """
+    Decode an encoded state string and set the environment to that state.
+    This forcibly overwrites the current environment state.
+
+    Args:
+        encoded_state (str): The encoded state string to decode
+
+    Raises:
+        ValueError: If the encoded state is invalid or malformed
+    """
+    try:
+        # Reset cumulative reward
+        self.cumulative_reward = 0.0
+
+        # Parse the main components
+        parts = encoded_state.split(':')
+        if len(parts) < 3:
+            raise ValueError("Invalid encoded state format: insufficient parts")
+
+        grid_part = parts[0]
+        objects_part = ':'.join(parts[1:-1])  # Handle potential extra colons in object encoding
+        agent_part = parts[-1]
+
+        # Parse grid dimensions
+        if 'x' not in grid_part:
+            raise ValueError("Invalid grid size format")
+        width_str, height_str = grid_part.split('x')
+        width, height = int(width_str), int(height_str)
+
+        # Reverse color mapping
+        reverse_color_map = {
+            'r': 'red', 'g': 'green', 'b': 'blue',
+            'p': 'purple', 'y': 'yellow', 'o': 'orange'
+        }
+
+        # Reverse object mapping
+        reverse_obj_map = {
+            'W': 'wall', 'F': 'floor', 'L': 'lava', 'G': 'goal',
+            'K': 'key', 'B': 'ball', 'X': 'box', 'D': 'door'
+        }
+
+        # Initialize new grid
+        self.grid = Grid(width, height)
+
+        # Parse objects if objects_part is not empty
+        if objects_part.strip():
+            object_sections = objects_part.split(':')
+
+            # Process each object type section
+            for section in object_sections:
+                if not section.strip():
+                    continue
+
+                # Split multiple object groups in the same section
+                groups = section.split(';')
+                for group in groups:
+                    if not group.strip():
+                        continue
+
+                    # Parse individual object group: "TYPE_COLOR@pos1,pos2,pos3"
+                    if '@' not in group:
+                        continue
+
+                    obj_spec, positions_str = group.split('@', 1)
+                    positions = [int(pos) for pos in positions_str.split(',')]
+
+                    # Parse object specification
+                    spec_parts = obj_spec.split('_')
+                    obj_type_code = spec_parts[0]
+
+                    if obj_type_code not in reverse_obj_map:
+                        continue
+
+                    obj_type = reverse_obj_map[obj_type_code]
+
+                    # Handle different object types
+                    for pos in positions:
+                        x = pos % width
+                        y = pos // width
+
+                        if x >= width or y >= height:
+                            raise ValueError(f"Position {pos} out of bounds for grid {width}x{height}")
+
+                        obj = None
+
+                        if obj_type == 'wall':
+                            obj = Wall()
+                        elif obj_type == 'floor':
+                            obj = Floor()
+                        elif obj_type == 'lava':
+                            obj = Lava()
+                        elif obj_type == 'goal':
+                            obj = Goal()
+                        elif obj_type in ['key', 'ball', 'box']:
+                            if len(spec_parts) >= 2:
+                                color_code = spec_parts[1]
+                                color = reverse_color_map.get(color_code, color_code)
+                            else:
+                                color = 'red'  # Default color
+
+                            if obj_type == 'key':
+                                obj = Key(color)
+                            elif obj_type == 'ball':
+                                obj = Ball(color)
+                            elif obj_type == 'box':
+                                obj = Box(color)
+                        elif obj_type == 'door':
+                            if len(spec_parts) >= 3:
+                                color_code = spec_parts[1]
+                                state_code = spec_parts[2]
+                                color = reverse_color_map.get(color_code, color_code)
+
+                                is_open = state_code == 'o'
+                                is_locked = state_code == 'l'
+                                obj = Door(color, is_open=is_open, is_locked=is_locked)
+                            else:
+                                obj = Door('red')  # Default door
+
+                        if obj is not None:
+                            self.grid.set(x, y, obj)
+
+        # Parse agent state: "A@pos_dir_carrying"
+        if not agent_part.startswith('A@'):
+            raise ValueError("Invalid agent state format")
+
+        agent_spec = agent_part[2:]  # Remove "A@"
+        agent_parts = agent_spec.split('_')
+
+        if len(agent_parts) < 3:
+            raise ValueError("Invalid agent specification")
+
+        agent_pos = int(agent_parts[0])
+        agent_dir = int(agent_parts[1])
+        carrying_spec = '_'.join(agent_parts[2:])  # Handle underscores in carrying spec
+
+        # Set agent position
+        agent_x = agent_pos % width
+        agent_y = agent_pos // width
+
+        if agent_x >= width or agent_y >= height:
+            raise ValueError(f"Agent position {agent_pos} out of bounds")
+
+        self.agent_pos = (agent_x, agent_y)
+        self.agent_dir = agent_dir % 4  # Ensure valid direction
+
+        # Set carrying object
+        if carrying_spec == 'none':
+            self.carrying = None
+        else:
+            carry_parts = carrying_spec.split('_')
+            carry_type_code = carry_parts[0]
+
+            if carry_type_code in reverse_obj_map:
+                carry_type = reverse_obj_map[carry_type_code]
+
+                if carry_type == 'key':
+                    if len(carry_parts) >= 2:
+                        color_code = carry_parts[1]
+                        color = reverse_color_map.get(color_code, color_code)
+                    else:
+                        color = 'red'
+                    self.carrying = Key(color)
+                elif carry_type == 'ball':
+                    if len(carry_parts) >= 2:
+                        color_code = carry_parts[1]
+                        color = reverse_color_map.get(color_code, color_code)
+                    else:
+                        color = 'red'
+                    self.carrying = Ball(color)
+                elif carry_type == 'box':
+                    if len(carry_parts) >= 2:
+                        color_code = carry_parts[1]
+                        color = reverse_color_map.get(color_code, color_code)
+                    else:
+                        color = 'red'
+                    self.carrying = Box(color)
+
+                # Set carried object position to invalid (carried objects don't have grid positions)
+                if self.carrying is not None:
+                    self.carrying.cur_pos = np.array([-1, -1])
+            else:
+                self.carrying = None
+
+        # Reset step count
+        self.step_count = 0
+
+        # Update environment dimensions if they changed
+        self.width = width
+        self.height = height
+
+    except (ValueError, IndexError, AttributeError) as e:
+        raise ValueError(f"Failed to decode state: {str(e)}")
+
+
 def rotate_coordinate(x, y, rotation_mode, n):
     """
     Rotate a 2D coordinate in a gridworld.
