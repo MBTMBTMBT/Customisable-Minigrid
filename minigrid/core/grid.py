@@ -5,9 +5,9 @@ from typing import Any, Callable
 
 import numpy as np
 
-from minigrid.core.constants import OBJECT_TO_IDX, TILE_PIXELS
-from minigrid.core.world_object import Wall, WorldObj
-from minigrid.utils.rendering import (
+from core.constants import OBJECT_TO_IDX, TILE_PIXELS
+from core.world_object import Wall, WorldObj
+from utils.rendering import (
     downsample,
     fill_coords,
     highlight_img,

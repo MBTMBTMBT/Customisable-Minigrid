@@ -9,6 +9,8 @@ from minigrid.envs.wfc.config import WFC_PRESETS, register_wfc_presets
 
 __version__ = "2.5.0"
 
+from customisable_minigrid_env import CustomMiniGridEnv
+
 
 def register_minigrid_envs():
     # BlockedUnlockPickup

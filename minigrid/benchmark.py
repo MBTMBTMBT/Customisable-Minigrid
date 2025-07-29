@@ -6,8 +6,8 @@ import time
 
 import gymnasium as gym
 
-from minigrid.manual_control import ManualControl
-from minigrid.wrappers import ImgObsWrapper, RGBImgPartialObsWrapper
+from manual_control import ManualControl
+from wrappers import ImgObsWrapper, RGBImgPartialObsWrapper
 
 
 def benchmark(env_id, num_resets, num_frames):

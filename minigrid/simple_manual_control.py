@@ -6,11 +6,11 @@ import gymnasium as gym
 import pygame
 from gymnasium import Env
 
-from minigrid.core.actions import Actions
-from minigrid.minigrid_env import MiniGridEnv
-from minigrid.wrappers import ImgObsWrapper, RGBImgPartialObsWrapper
+from core.actions import Actions
+from minigrid_env import MiniGridEnv
+from wrappers import ImgObsWrapper, RGBImgPartialObsWrapper
 
-from minigrid.simple_actions import SimpleActions
+from simple_actions import SimpleActions
 
 
 class ManualControl:

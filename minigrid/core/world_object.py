@@ -4,14 +4,14 @@ from typing import TYPE_CHECKING, Tuple
 
 import numpy as np
 
-from minigrid.core.constants import (
+from core.constants import (
     COLOR_TO_IDX,
     COLORS,
     IDX_TO_COLOR,
     IDX_TO_OBJECT,
     OBJECT_TO_IDX,
 )
-from minigrid.utils.rendering import (
+from utils.rendering import (
     fill_coords,
     point_in_circle,
     point_in_line,
@@ -19,7 +19,7 @@ from minigrid.utils.rendering import (
 )
 
 if TYPE_CHECKING:
-    from minigrid.minigrid_env import MiniGridEnv
+    from minigrid_env import MiniGridEnv
 
 Point = Tuple[int, int]
 

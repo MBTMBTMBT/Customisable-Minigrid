@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from minigrid.core.constants import COLOR_NAMES
-from minigrid.core.grid import Grid
-from minigrid.core.world_object import Ball, Box, Door, Key, WorldObj
-from minigrid.minigrid_env import MiniGridEnv
+from core.constants import COLOR_NAMES
+from core.grid import Grid
+from core.world_object import Ball, Box, Door, Key, WorldObj
+from minigrid_env import MiniGridEnv
 
 
 def reject_next_to(env: MiniGridEnv, pos: tuple[int, int]):

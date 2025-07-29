@@ -12,11 +12,11 @@ import pygame.freetype
 from gymnasium import spaces
 from gymnasium.core import ActType, ObsType
 
-from minigrid.core.actions import Actions
-from minigrid.core.constants import COLOR_NAMES, DIR_TO_VEC, TILE_PIXELS
-from minigrid.core.grid import Grid
-from minigrid.core.mission import MissionSpace
-from minigrid.core.world_object import Point, WorldObj
+from core.actions import Actions
+from core.constants import COLOR_NAMES, DIR_TO_VEC, TILE_PIXELS
+from core.grid import Grid
+from core.mission import MissionSpace
+from core.world_object import Point, WorldObj
 
 T = TypeVar("T")
 

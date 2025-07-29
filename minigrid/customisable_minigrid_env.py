@@ -3,15 +3,15 @@ import random
 from typing import Optional, Dict, Any, SupportsFloat
 
 from gymnasium import spaces
-from minigrid.core.grid import Grid
-from minigrid.core.mission import MissionSpace
-from minigrid.core.world_object import *
-from minigrid.core.world_object import WorldObj
-from minigrid.minigrid_env import MiniGridEnv
+from core.grid import Grid
+from core.mission import MissionSpace
+from core.world_object import *
+from core.world_object import WorldObj
+from minigrid_env import MiniGridEnv
 from gymnasium.core import ActType, ObsType
-from minigrid.core.constants import OBJECT_TO_IDX, COLOR_TO_IDX, STATE_TO_IDX, TILE_PIXELS
+from core.constants import OBJECT_TO_IDX, COLOR_TO_IDX, STATE_TO_IDX, TILE_PIXELS
 
-from minigrid.simple_actions import SimpleActions
+from simple_actions import SimpleActions
 from simple_manual_control import SimpleManualControl
 
 DEFAULT_REWARD_DICT = {
@@ -27,7 +27,7 @@ DEFAULT_REWARD_DICT = {
 }
 
 
-class CustomEnv(MiniGridEnv):
+class CustomMiniGridEnv(MiniGridEnv):
     """
     A custom MiniGrid environment that loads its layout from a structured JSON configuration.
     This environment does not support random generation. All objects, colors, positions, and agent settings
@@ -972,7 +972,7 @@ def flip_direction(direction, flip_mode):
 
 
 if __name__ == "__main__":
-    env = CustomEnv(
+    env = CustomMiniGridEnv(
         json_file_path='../maps/door-key.json',
         config=None,
         display_size=None,

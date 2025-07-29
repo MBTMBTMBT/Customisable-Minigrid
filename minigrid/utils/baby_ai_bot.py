@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from minigrid.core.world_object import WorldObj
-from minigrid.envs.babyai.core.verifier import (
+from core.world_object import WorldObj
+from envs.babyai.core.verifier import (
     AfterInstr,
     AndInstr,
     BeforeInstr,
