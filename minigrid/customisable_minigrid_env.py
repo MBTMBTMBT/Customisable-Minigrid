@@ -973,7 +973,7 @@ def flip_direction(direction, flip_mode):
 
 if __name__ == "__main__":
     env = CustomMiniGridEnv(
-        json_file_path='../maps/door-key.json',
+        json_file_path='../maps/two-doors-two-keys.json',
         config=None,
         display_size=None,
         display_mode="random",

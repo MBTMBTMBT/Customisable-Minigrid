@@ -5,26 +5,24 @@ This module provides functions for sampling complete MDP transition tables
 from environments that support state encoding/decoding.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List, Tuple
 import json
 
 
-def sample_mdp_transitions(env: Any, max_states: int = float('inf')) -> Dict[str, Dict[int, Dict[str, float]]]:
+def sample_mdp_transitions(env: Any, start_states: Optional[List[str]] = None,
+                                   max_states: int = float('inf')) -> Dict[str, Dict[int, Dict[str, float]]]:
     """
-    Sample the complete MDP transition table using breadth-first search.
-    Returns a dictionary mapping state -> action -> next_state -> reward.
-
-    This function temporarily sets sparse reward to False to capture immediate rewards,
-    then restores the original setting after sampling.
+    Unified MDP transition sampling function that supports both single and multiple start states.
 
     Args:
         env: Environment instance that supports encode_state(), decode_state(), and step() methods
-        max_states (int): Maximum number of states to explore. Default is infinite.
+        start_states: Optional list of encoded state strings to use as starting points.
+                     If None, uses current environment state as single starting point.
+        max_states: Maximum number of states to explore. Default is infinite.
 
     Returns:
         Dict[str, Dict[int, Dict[str, float]]]: Transition table in format:
             {state_a: {action: {state_b: reward, ...}, ...}, ...}
-            where states are encoded strings, actions are integers, rewards are floats.
 
     Raises:
         AttributeError: If environment doesn't support required methods
@@ -42,214 +40,167 @@ def sample_mdp_transitions(env: Any, max_states: int = float('inf')) -> Dict[str
     # Temporarily disable sparse rewards to get immediate rewards
     env.reward_config["sparse"] = False
 
-    # Initialize data structures
-    transition_table = {}  # {state_a: {action: {state_b: reward}}}
-    visited_states = set()  # Set of encoded state strings we've already processed
-    exploration_queue = []  # Queue of encoded states to explore
-    states_explored = 0
+    # Initialize combined data structures
+    combined_table = {}  # Final combined transition table
+    global_visited_states = set()  # Global set of all visited states
+    total_states_explored = 0
 
     try:
-        # Get initial state
-        initial_encoded = env.encode_state()
-        exploration_queue.append(initial_encoded)
-        visited_states.add(initial_encoded)
+        # Determine starting points
+        if start_states is None:
+            # Single start state mode - use current environment state
+            initial_encoded = env.encode_state()
+            start_points = [initial_encoded]
+            print(f"Starting single-point MDP sampling from: {initial_encoded[:50]}...")
+        else:
+            # Multiple start states mode
+            start_points = start_states
+            print(f"Starting multi-point MDP sampling from {len(start_points)} start states...")
 
-        print(f"Starting MDP sampling from initial state: {initial_encoded[:50]}...")
+        # Process each starting point
+        for start_idx, start_state in enumerate(start_points):
+            if total_states_explored >= max_states:
+                print(f"Reached maximum state limit ({max_states}), stopping exploration")
+                break
 
-        # Main BFS loop
-        while exploration_queue and states_explored < max_states:
-            # Get current state from queue
-            current_encoded = exploration_queue.pop(0)
-            states_explored += 1
+            if start_states is not None:
+                print(f"\n--- Sampling from start state {start_idx + 1}/{len(start_points)} ---")
 
-            if states_explored % 100 == 0:
-                print(f"Explored {states_explored} states, queue size: {len(exploration_queue)}")
-
-            # Restore environment to current state
-            env.decode_state(current_encoded)
-
-            # Initialize transition entry for current state if not exists
-            if current_encoded not in transition_table:
-                transition_table[current_encoded] = {}
-
-            # Try each possible action from current state
-            valid_actions = []
-            for action in range(env.action_space.n):
-                # Save current state before trying action
-                state_before_action = env.encode_state()
-
+                # Set environment to start state
                 try:
-                    # Execute action and get immediate reward
-                    obs, reward, terminated, truncated, info = env.step(action)
-
-                    # Get resulting state
-                    next_encoded = env.encode_state()
-
-                    # Record this transition
-                    if action not in transition_table[current_encoded]:
-                        transition_table[current_encoded][action] = {}
-
-                    transition_table[current_encoded][action][next_encoded] = float(reward)
-
-                    # Add next state to exploration queue if not visited and not terminal
-                    if (next_encoded not in visited_states and
-                            not terminated and
-                            not truncated and
-                            len(visited_states) < max_states):
-                        exploration_queue.append(next_encoded)
-                        visited_states.add(next_encoded)
-
-                    # Mark this action as valid
-                    valid_actions.append(action)
-
+                    env.decode_state(start_state)
                 except Exception as e:
-                    # If action failed, skip it and continue
-                    print(f"Action {action} failed from state {current_encoded[:30]}...: {e}")
+                    print(f"Failed to decode start state {start_idx + 1}: {e}")
                     continue
 
-                finally:
-                    # Always restore state before trying next action
+            # Initialize local exploration structures
+            local_transition_table = {}  # Local transitions for this start point
+            local_visited_states = set()  # Local visited states for this start point
+            exploration_queue = []  # Queue of encoded states to explore
+            local_states_explored = 0
+
+            # Add starting state to exploration
+            current_start = env.encode_state()  # Get actual current state after decode
+            exploration_queue.append(current_start)
+            local_visited_states.add(current_start)
+
+            # Calculate remaining budget for this start point
+            remaining_budget = max_states - total_states_explored
+
+            # Main BFS loop for current start point
+            while exploration_queue and local_states_explored < remaining_budget:
+                # Get current state from queue
+                current_encoded = exploration_queue.pop(0)
+                local_states_explored += 1
+
+                if local_states_explored % 100 == 0:
+                    print(f"Explored {local_states_explored} states locally, queue size: {len(exploration_queue)}")
+
+                # Restore environment to current state
+                env.decode_state(current_encoded)
+
+                # Initialize transition entry for current state if not exists
+                if current_encoded not in local_transition_table:
+                    local_transition_table[current_encoded] = {}
+
+                # Try each possible action from current state
+                valid_actions = []
+                for action in range(env.action_space.n):
+                    # Save current state before trying action
+                    state_before_action = env.encode_state()
+
                     try:
-                        env.decode_state(state_before_action)
+                        # Execute action and get immediate reward
+                        obs, reward, terminated, truncated, info = env.step(action)
+
+                        # Get resulting state
+                        next_encoded = env.encode_state()
+
+                        # Record this transition
+                        if action not in local_transition_table[current_encoded]:
+                            local_transition_table[current_encoded][action] = {}
+
+                        local_transition_table[current_encoded][action][next_encoded] = float(reward)
+
+                        # Add next state to exploration queue if not visited locally and not terminal
+                        if (next_encoded not in local_visited_states and
+                                not terminated and
+                                not truncated and
+                                len(local_visited_states) < remaining_budget):
+                            exploration_queue.append(next_encoded)
+                            local_visited_states.add(next_encoded)
+
+                        # Mark this action as valid
+                        valid_actions.append(action)
+
                     except Exception as e:
-                        print(f"Failed to restore state: {e}")
-                        # If we can't restore, break out of action loop
-                        break
+                        # If action failed, skip it and continue
+                        print(f"Action {action} failed from state {current_encoded[:30]}...: {e}")
+                        continue
 
-            # Verify we have valid transitions for this state
-            if not valid_actions:
-                print(f"Warning: No valid actions found for state {current_encoded[:30]}...")
+                    finally:
+                        # Always restore state before trying next action
+                        try:
+                            env.decode_state(state_before_action)
+                        except Exception as e:
+                            print(f"Failed to restore state: {e}")
+                            # If we can't restore, break out of action loop
+                            break
 
-            # Progress update for large state spaces
-            if states_explored % 1000 == 0:
-                print(f"Progress: {states_explored} states explored, "
-                      f"{len(transition_table)} states in table, "
-                      f"{len(exploration_queue)} states queued")
+                # Verify we have valid transitions for this state
+                if not valid_actions:
+                    print(f"Warning: No valid actions found for state {current_encoded[:30]}...")
+
+                # Progress update for large state spaces
+                if local_states_explored % 1000 == 0:
+                    print(f"Local progress: {local_states_explored} states explored, "
+                          f"{len(local_transition_table)} states in local table, "
+                          f"{len(exploration_queue)} states queued")
+
+            # Merge local results into combined table
+            for state, transitions in local_transition_table.items():
+                if state not in combined_table:
+                    combined_table[state] = {}
+                for action, next_states in transitions.items():
+                    if action not in combined_table[state]:
+                        combined_table[state][action] = {}
+                    combined_table[state][action].update(next_states)
+
+            # Update global tracking
+            global_visited_states.update(local_visited_states)
+            total_states_explored = len(combined_table)
+
+            print(f"Completed start point {start_idx + 1}: {local_states_explored} local states explored")
+            print(f"Total unique states discovered so far: {total_states_explored}")
 
         # Final statistics
         total_transitions = sum(
             sum(len(action_dict) for action_dict in state_dict.values())
-            for state_dict in transition_table.values()
+            for state_dict in combined_table.values()
         )
 
-        print(f"MDP sampling completed!")
-        print(f"Total states explored: {states_explored}")
-        print(f"Total states in transition table: {len(transition_table)}")
+        print(f"\nMDP sampling completed!")
+        print(f"Total start points processed: {len(start_points)}")
+        print(f"Total unique states discovered: {len(combined_table)}")
         print(f"Total transitions recorded: {total_transitions}")
-        print(
-            f"Average transitions per state: {total_transitions / len(transition_table) if transition_table else 0:.2f}")
+        print(f"Average transitions per state: {total_transitions / len(combined_table) if combined_table else 0:.2f}")
 
-        return transition_table
+        return combined_table
 
     except KeyboardInterrupt:
         print(f"\nMDP sampling interrupted by user.")
-        print(f"Partial results: {len(transition_table)} states sampled")
-        return transition_table
+        print(f"Partial results: {len(combined_table)} states sampled")
+        return combined_table
 
     except Exception as e:
         print(f"Error during MDP sampling: {e}")
-        return transition_table
+        return combined_table
 
     finally:
         # Always restore original sparse reward setting
         env.reward_config["sparse"] = original_sparse
         print(f"Restored original sparse reward setting: {original_sparse}")
 
-
-def sample_mdp_from_multiple_starts(env: Any, start_states: list, max_states: int = float('inf')) -> Dict[
-    str, Dict[int, Dict[str, float]]]:
-    """
-    Sample MDP transitions starting from multiple initial states.
-
-    Args:
-        env: Environment instance
-        start_states: List of encoded state strings to use as starting points
-        max_states: Maximum total states to explore
-
-    Returns:
-        Combined transition table from all starting states
-    """
-    combined_table = {}
-    total_explored = 0
-
-    for i, start_state in enumerate(start_states):
-        if total_explored >= max_states:
-            break
-
-        print(f"\n--- Sampling from start state {i + 1}/{len(start_states)} ---")
-
-        # Set environment to start state
-        try:
-            env.decode_state(start_state)
-        except Exception as e:
-            print(f"Failed to decode start state {i + 1}: {e}")
-            continue
-
-        # Sample with remaining state budget
-        remaining_budget = max_states - total_explored
-        partial_table = sample_mdp_transitions(env, remaining_budget)
-
-        # Merge results
-        for state, transitions in partial_table.items():
-            if state not in combined_table:
-                combined_table[state] = {}
-            for action, next_states in transitions.items():
-                if action not in combined_table[state]:
-                    combined_table[state][action] = {}
-                combined_table[state][action].update(next_states)
-
-        total_explored = len(combined_table)
-        print(f"Total unique states discovered so far: {total_explored}")
-
-    return combined_table
-
-
-def sample_mdp_with_random_restarts(env: Any, num_restarts: int = 5, max_states: int = float('inf')) -> Dict[
-    str, Dict[int, Dict[str, float]]]:
-    """
-    Sample MDP transitions with random environment resets to discover more states.
-
-    Args:
-        env: Environment instance that supports reset()
-        num_restarts: Number of random restarts to perform
-        max_states: Maximum total states to explore
-
-    Returns:
-        Combined transition table from all restart attempts
-    """
-    combined_table = {}
-    total_explored = 0
-
-    for restart in range(num_restarts):
-        if total_explored >= max_states:
-            break
-
-        print(f"\n--- Random restart {restart + 1}/{num_restarts} ---")
-
-        # Reset environment to get new random initial state
-        try:
-            env.reset()
-        except Exception as e:
-            print(f"Failed to reset environment for restart {restart + 1}: {e}")
-            continue
-
-        # Sample with remaining state budget
-        remaining_budget = max_states - total_explored
-        partial_table = sample_mdp_transitions(env, remaining_budget)
-
-        # Merge results
-        for state, transitions in partial_table.items():
-            if state not in combined_table:
-                combined_table[state] = {}
-            for action, next_states in transitions.items():
-                if action not in combined_table[state]:
-                    combined_table[state][action] = {}
-                combined_table[state][action].update(next_states)
-
-        total_explored = len(combined_table)
-        print(f"Total unique states discovered so far: {total_explored}")
-
-    return combined_table
 
 def analyze_transition_table(transition_table: Dict[str, Dict[int, Dict[str, float]]]) -> None:
     """
